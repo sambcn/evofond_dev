@@ -20,7 +20,7 @@ class SedimentTransportLaw(ABC):
             I = (section.get_H(Q, y) - section.get_down_section().get_H(Q, y_down)) / (section.get_down_section().get_x() - section.get_x())
         I=max(I,0.001)
         # I=max(section.get_S0(),0.001)
-        b = 0.5*(section.get_b(y) + section.get_down_section().get_b(y_down))
+        b = 0.5*(section.get_b() + section.get_down_section().get_b())
         return self.compute_Qs_formula(b, section.get_granulometry(), Q, I)
 
     @abstractmethod

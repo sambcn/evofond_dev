@@ -1,0 +1,13 @@
+rectangulaire entre B0_min et z_min
+
+largeur du fond pour les calculs !
+(coefficient entre 0 et 1 fond ou en haut ? pas tres pertinent)
+
+COMPARAISON  HEC RAS INJECTION LIQUIDE
+
+
+meme profil pour les injections/ deversements que le sedimentogramme
+
+injection / deversement en débit solide !
+
+stabilité pour l'injection gérée par l'utilisateur 

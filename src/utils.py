@@ -34,6 +34,19 @@ def get_centroid(points):
     centroid_y = sum(y_coords)/_len
     return (centroid_x, centroid_y)
 
+def add_injections(Q_list, injection_list):
+    """
+    if Q_list = [10, 10, 10, 10, 10]
+    and injection = [0, 5, 0, 10, 0]
+    it will return a new water discharge list : [10, 15, 15, 25, 25]
+    """
+    new_Q_list = []
+    sum_of_injection = 0
+    for Q, Q_injected in zip(Q_list, injection_list):
+        sum_of_injection += Q_injected
+        new_Q_list.append(Q+sum_of_injection)
+    return new_Q_list
+
 
 def check_answer(answer, list_of_accepted_answers):
     while not(answer in list_of_accepted_answers):

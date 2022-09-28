@@ -21,17 +21,22 @@ class MeyerPeter1948(SedimentTransportLaw):
         inter_section = section.interp_as_up_section(section.get_down_section())
         d50  = section.get_granulometry().d50
         d90  = section.get_granulometry().d90
-        R = inter_section.get_R(Q, 0.5*(y+y_down))
+        R = inter_section.get_R(0.5*(y+y_down))
+
         n_bis = (d90/26)**(1/6)
         n = (R**(2/3)*I**0.5)/inter_section.get_V(Q, 0.5*(y+y_down))
         correction_coef = (n_bis/n)**(3/2)
         correction_coef = min(1, correction_coef)
 
         tau_star = R*I/(1.65*d50)
-        phi = 8*(correction_coef*tau_star-0.047)**(3/2)
+        if tau_star >  0.047:
+            phi = 8*(correction_coef*tau_star-0.047)**(3/2)
+        else:
+            phi = 0
         qsv = phi * (G*1.65*d50**3)**0.5
         Qs = qsv * inter_section.get_b(0.5*(y+y_down)) / 0.75 # debit apparent
-        Qs = max(0, Qs)
+        # Qs = max(0, Qs)
+        
         return Qs
 
     def __str__(self):

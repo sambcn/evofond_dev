@@ -12,7 +12,7 @@ from src.utils import Y_MIN, G, get_matrix_max, read_hecras_data, reverse_data, 
 
 class Profile():
 
-    def __init__(self, section_list, name="Profile"):
+    def __init__(self, section_list, exit_loss_coef_list=None, name="Profile"):
         if len(section_list) < 2:
             raise(ValueError("You need at least 2 sections to initialize a profile"))
         self.__name = name
@@ -20,6 +20,10 @@ class Profile():
         self.setup_section_list()
         self.__upstream = section_list[0]
         self.__downstream = section_list[-1]
+        if exit_loss_coef_list == None or len(exit_loss_coef_list) != len(section_list):
+            self.__exit_loss_coef_list = [0 for _ in range(len(section_list)-1)]
+        else:
+            self.__exit_loss_coef_list = exit_loss_coef_list
 
     def complete(self, dx):
         """
@@ -40,6 +44,7 @@ class Profile():
                 new_x.append(x_up+k*dx_i)
             new_x.append(x_down)
         new_list_of_section = []
+        new_exit_loss_coef_list = []
         x_up = x_0[0]
         x_down = x_0[1]
         segment_index = 0
@@ -47,6 +52,7 @@ class Profile():
             if xi in x_0:
                 index = x_0.index(xi)
                 new_list_of_section.append(self.get_section(index))
+                new_exit_loss_coef_list.append(self.get_exit_loss_coef(index))
             else:
                 while xi > x_down:
                     segment_index += 1
@@ -56,41 +62,10 @@ class Profile():
                 down_section = self.get_section(segment_index+1)
                 new_section = up_section.interp_as_up_section(down_section, xi)
                 new_list_of_section.append(new_section)
+                new_exit_loss_coef_list.append(self.get_exit_loss_coef(segment_index))
         self.__section_list = new_list_of_section
+        self.__exit_loss_coef_list = new_exit_loss_coef_list
         self.setup_section_list()
-
-
-
-    def complete_bis(self, dx, starting_index=0, ending_index=-1):
-        """
-        Add new sections to the profile between the starting_index and the ending_index, such that there is at least one section every dx in this interval.
-        This methods do not change upstream et downstream attributes.
-        It needs the section_list to be in a coherent state (see more details in setup_section_list method).
-        example : if dx=10 and there are no sections between x=5 and x=20 it will add a new section at x=15 (created by interpolation)
-        """
-        if ending_index==-1:
-            ending_index = len(self.__section_list)-1
-        section_sublist = self.__section_list[starting_index:ending_index+1]
-        new_list = [section_sublist.pop(0)]
-        x_current = self.get_section(starting_index).get_x()
-        x_down = self.get_section(ending_index).get_x()
-        while x_current < x_down:
-            if x_current + dx >= section_sublist[0].get_x():
-                new_section = section_sublist.pop(0)
-                x_current = new_section.get_x()
-                new_section.set_up_section(new_list[-1])
-                new_list.append(new_section)
-            else:
-                if x_current + 2*dx >= section_sublist[0].get_x():
-                    x_current = 0.5*(section_sublist[0].get_x()+x_current)
-                else:
-                    x_current += dx
-                up_section = new_list[-1]
-                down_section = section_sublist[0]
-                new_section = up_section.interp_as_up_section(down_section, x_current)
-                new_list.append(new_section)
-                up_section.set_down_section(new_section)
-        self.__section_list[starting_index:ending_index+1] = new_list
 
     def setup_section_list(self):
         """
@@ -133,7 +108,7 @@ class Profile():
     # resolution methods
 
     @Performance.measure_perf
-    def compute_depth(self, Q, plot=False, hydraulic_jump_analysis=False, method="ImprovedEuler", friction_law="Ferguson", compare=None, upstream_condition="normal_depth", downstream_condition="normal_depth"):
+    def compute_depth(self, Q_list, plot=False, method="ImprovedEuler", friction_law="Ferguson", compare=None, upstream_condition="normal_depth", downstream_condition="normal_depth"):
         """
         compute the water depth in the profile for a given water discharge Q
         """
@@ -142,23 +117,25 @@ class Profile():
             print(f"WARNING : chosen method not in the available list : {method_set}, it has been set by default on ImprovedEuler")
             method = "ImprovedEuler"
 
-        yc_list = self.get_yc_list(Q)
+        if type(Q_list) == float or type(Q_list) == int:
+            Q_list = [Q_list for _ in range(self.get_nb_section())]
+
+        yc_list = self.get_yc_list(Q_list)
         y_list = yc_list[:]
-        y_list[0] = self.get_upstream_boundary_condition(Q, friction_law=friction_law, upstream_condition=upstream_condition)
-        y_list[-1] = self.get_downstream_boundary_condition(Q, friction_law=friction_law, downstream_condition=downstream_condition)
-        hs_list = [s.get_Hs(Q, y_list[i]) for i, s in enumerate(self.get_section_list())]
-        hsc_list = [s.get_Hs(Q, yc_list[i]) for i, s in enumerate(self.get_section_list())]
-        Fs_list = [s.get_Fs(Q, y_list[i]) for i, s in enumerate(self.get_section_list())]
-        hydraulic_index = []
+        y_list[0] = self.get_upstream_boundary_condition(Q_list[0], friction_law=friction_law, upstream_condition=upstream_condition)
+        y_list[-1] = self.get_downstream_boundary_condition(Q_list[-1], friction_law=friction_law, downstream_condition=downstream_condition)
+        hs_list = [s.get_Hs(Q_list[i], y_list[i]) for i, s in enumerate(self.get_section_list())]
+        hsc_list = [s.get_Hs(Q_list[i], yc_list[i]) for i, s in enumerate(self.get_section_list())]
+        Fs_list = [s.get_Fs(Q_list[i], y_list[i]) for i, s in enumerate(self.get_section_list())]
 
         i_current = 0
         i_memory_1 = self.get_nb_section()-1
         i_memory_2 = self.get_nb_section()-1
         i_memory_3 = self.get_nb_section()-1        
         down_direction = True
+        nb_loop = 0
 
         # y_list_memory = y_list[:]
-        # nb_loop = 0
         while i_current > 0 or (down_direction and i_current == 0):
             # print(f"start at x = {self.get_section(i_current).get_x()} toward {'down' if down_direction else 'up'} direction")
             
@@ -167,12 +144,12 @@ class Profile():
                     current_section = self.get_section(i_current)
                     next_section = self.get_section(i_current+1)
                     if y_list[i_current] > yc_list[i_current]:                    
-                        y_next = self.__compute_next_y(Q, current_section, next_section, yc_list[i_current], hsc_list[i_current], yc_list[i_current+1], supercritical=True, method=method, friction_law=friction_law)
+                        y_next = self.__compute_next_y(Q_list[i_current], Q_list[i_current+1], current_section, next_section, yc_list[i_current], hsc_list[i_current], yc_list[i_current+1], supercritical=True, method=method, friction_law=friction_law)
                     else:
-                        y_next = self.__compute_next_y(Q, current_section, next_section, y_list[i_current], hs_list[i_current], yc_list[i_current+1], supercritical=True, method=method, friction_law=friction_law)
-                    hs_next = next_section.get_Hs(Q, y_next)
-                    Fs_next = next_section.get_Fs(Q, y_next)
-                    if i_current != self.get_nb_section()-2 and (Fs_next > Fs_list[i_current+1] or hs_list[i_current+1] + next_section.get_z() > hs_list[i_current] + current_section.get_z()):
+                        y_next = self.__compute_next_y(Q_list[i_current], Q_list[i_current+1], current_section, next_section, y_list[i_current], hs_list[i_current], yc_list[i_current+1], supercritical=True, method=method, friction_law=friction_law)
+                    hs_next = next_section.get_Hs(Q_list[i_current+1], y_next)
+                    Fs_next = next_section.get_Fs(Q_list[i_current+1], y_next)
+                    if (Fs_next > Fs_list[i_current+1] or hs_list[i_current+1] + next_section.get_z() > hs_list[i_current] + current_section.get_z()):
                         y_list[i_current+1] = y_next
                         hs_list[i_current+1] = hs_next
                         Fs_list[i_current+1] = Fs_next 
@@ -182,15 +159,23 @@ class Profile():
             else:
                 i_current = i_memory_2
                 update_flag = False
+                end_of_update = False
+                if nb_loop == 1:
+                    y_list[-1] = self.get_downstream_boundary_condition(Q_list[-1], friction_law=friction_law, downstream_condition=downstream_condition)
+                    hs_list[-1] = self.get_downstream_section().get_Hs(Q_list[-1], y_list[-1])
+                    Fs_list[-1] = self.get_downstream_section().get_Fs(Q_list[-1], y_list[-1])
+                    update_flag = True
+                    i_memory_1 = i_current-1
+                    down_direction = True
                 while i_current > 0:
                     current_section = self.get_section(i_current)
                     next_section = self.get_section(i_current-1)
                     if y_list[i_current] < yc_list[i_current]:                    
-                        y_next = self.__compute_next_y(Q, current_section, next_section, yc_list[i_current], hsc_list[i_current], yc_list[i_current-1], supercritical=False, method=method, friction_law=friction_law)
+                        y_next = self.__compute_next_y(Q_list[i_current], Q_list[i_current-1], current_section, next_section, yc_list[i_current], hsc_list[i_current], yc_list[i_current-1], supercritical=False, method=method, friction_law=friction_law)
                     else:
-                        y_next = self.__compute_next_y(Q, current_section, next_section, y_list[i_current], hs_list[i_current], yc_list[i_current-1], supercritical=False, method=method, friction_law=friction_law)
-                    hs_next = next_section.get_Hs(Q, y_next)
-                    Fs_next = next_section.get_Fs(Q, y_next)
+                        y_next = self.__compute_next_y(Q_list[i_current], Q_list[i_current-1], current_section, next_section, y_list[i_current], hs_list[i_current], yc_list[i_current-1], supercritical=False, method=method, friction_law=friction_law)
+                    hs_next = next_section.get_Hs(Q_list[i_current-1], y_next)
+                    Fs_next = next_section.get_Fs(Q_list[i_current-1], y_next)
                     Fs_current = Fs_list[i_current-1]
                     if Fs_next > Fs_current:
                         # if hs_next + next_section.get_z() >= hs_list[i_current] + current_section.get_z():
@@ -200,44 +185,25 @@ class Profile():
                         y_list[i_current-1] = y_next
                         hs_list[i_current-1] = hs_next
                         Fs_list[i_current-1] = Fs_next
-                    if update_flag and (Fs_next <= Fs_current or i_current==1): # end of an updated section : we need to refresh supercritical computation
+                    else:
+                        end_of_update = True
+                    if update_flag and end_of_update: # end of an updated section : we need to refresh supercritical computation
                         i_memory_2 = i_current-1
                         down_direction = True
-                        if not(i_current-1 in hydraulic_index):
-                            hydraulic_index.insert(0, i_current-1)
                         i_current = i_memory_1
                         break
                     i_current -= 1
             
             # print(f"stoped at x={self.get_section(i_current).get_x() if not(down_direction) else self.get_section(i_memory_2).get_x()}")
-            # self.plot(Q=Q, y=y_list, title=f"step {nb_loop+1}", friction_law=friction_law)
-            # self.plot(Q=Q, y=y_list_memory, title=f"step {nb_loop}", friction_law=friction_law)
+            # self.plot(Q_list=Q_list, y=y_list, title=f"step {nb_loop+1}", friction_law=friction_law)
+            # self.plot(Q_list=Q_list, y=y_list_memory, title=f"step {nb_loop}", friction_law=friction_law)
             # y_list_memory = y_list[:]
             # plt.show()
-            # nb_loop += 1
-
-        # y_list = yc_list
+            
+            nb_loop += 1
 
         if plot:
-            fig = self.plot(y=y_list, Q=Q, friction_law=friction_law, compare=compare, background=True)
-            if hydraulic_jump_analysis:
-                ax1 = fig.get_axes()[0]
-                string = ""
-                for i, i_section in enumerate(hydraulic_index):
-                    upSection = self.get_section(i_section)
-                    downSection = self.get_section(i_section+1)
-                    y_up = y_list[i_section]
-                    y_down = y_list[i_section+1]
-                    Fr_up = upSection.get_Fr(Q, y_up)
-                    Fr_down = upSection.get_Fr(Q, y_down)
-                    deltaH = upSection.get_H(Q, y_up) - downSection.get_H(Q, y_down)
-                    string += f"\nHydraulic jump n°{i+1} analysis : \n"
-                    string += f"occurs at x = {upSection.get_x()}\n"
-                    string += f"result : y2 = {y_down}\n"
-                    string += f"theory : y2 = {-y_up*0.5+y_up*0.5*np.sqrt(1+8*Fr_up**2)}\n"
-                    string += f"result : deltaH = {deltaH} \n"
-                    string += f"theory : deltaH = {(y_down-y_up)**3 / (4*y_up*y_down)} \n"
-                ax1.annotate(string, (self.get_x_min(), min(self.get_z_min_list())))
+           self.plot(y=y_list, Q_list=Q_list, friction_law=friction_law, compare=compare, background=True)
             
         return y_list
 
@@ -289,21 +255,21 @@ class Profile():
 
         return QsIn
 
-    def compute_event(self, hydrogram, t_hydrogram, law, sedimentogram=None, backup=False, debug=False, method="ImprovedEuler", friction_law="Ferguson", cfl=1, critical=False, upstream_condition="normal_depth", downstream_condition="normal_depth", plot=False):
+    def compute_event(self, hydrogram, t_hydrogram, law, sedimentogram=None, backup=False, debug=False, method="ImprovedEuler", friction_law="Ferguson", cfl=1, critical=False, upstream_condition="normal_depth", downstream_condition="normal_depth", plot=False, animate=False, injection=None):
         """
         main function of the class : compute an entire event and return the evolution of the profile
         """
         start_computation = time()
+        t = t_hydrogram[0]
         y_matrix = [] # list of the water depth during the event
         z_matrix = [self.get_z_list()] # list of the bottom height during the event
         h_matrix = [] # list of head during the event
         V_in = 0 # solid volume gone into the profile during the event
         V_out = 0 # solid volume gone out of the profile
-        Q_list = [] # list of water discharge at each step of the computation
-        t_list = [] # list of the t time of each step of the commputation
-        dt_list = [] # list of the time steps used at each iteration
-        t = t_hydrogram[0]
-        t_list = [t]
+        Q_history = [] # list of water discharge at each step of the computation
+        t_history = [t] # list of the t time of each step of the commputation
+        dt_history = [] # list of the time steps used at each iteration
+        
         stored_volume_start = self.get_stored_volume() # stored volume of sediment at the start of the event 
         initial_profile = self.copy()
         method_set = {"Euler", "ImprovedEuler", "RungeKutta"}
@@ -320,23 +286,14 @@ class Profile():
         next_t_print = 0
         while t <= t_hydrogram[-1]:
             Q = np.interp(t, t_hydrogram, hydrogram)
-            Q_list.append(Q)
+            Q_history.append(Q)
+            Q_list = [Q for _ in range(self.get_nb_section())]
 
             # hydraulic computations
-            try:
-                if critical:
-                    y_list = self.get_yc_list(Q)
-                else:
-                    y_list = self.compute_depth(Q, method=method, friction_law=friction_law, upstream_condition="normal_depth", downstream_condition="normal_depth")
-            except Exception as e:
-                print("ERROR IN COMPUTING THIS EVENT : COULD NOT FINISH\n plotting the last state ...\n")
-                raise(e)
-                try:
-                    self.plot(Q=Q, y=y_list, friction_law=friction_law)
-                except Exception:
-                    pass
-                plt.show()
-                break
+            if critical:
+                y_list = self.get_yc_list(Q_list)
+            else:
+                y_list = self.compute_depth(Q_list, method=method, friction_law=friction_law, upstream_condition=upstream_condition, downstream_condition=downstream_condition)
 
             y_matrix.append(y_list)
             h_matrix.append([s.get_H(Q, y_list[i]) for i, s in enumerate(self.__section_list)])
@@ -351,7 +308,7 @@ class Profile():
                 next_t_print += (t_hydrogram[-1]/10)
            
             # solid transport
-            if sedimentogram == None:
+            if list(sedimentogram) == None:
                 QsIn0 = law.compute_Qs(initial_profile.get_upstream_section(), Q, y_list[0], y_list[1]) # Gonna change, it is a given parameter, chosen by users
             else:
                 QsIn0 = np.interp(t, t_hydrogram, sedimentogram)
@@ -361,20 +318,18 @@ class Profile():
             z_matrix.append(self.get_z_list())
 
             t += dt
-            dt_list.append(dt)
-            t_list.append(t)
+            dt_history.append(dt)
+            t_history.append(t)
             # debug
             if debug:
                 total_volume_difference.append(V_in - V_out - (self.get_stored_volume() - stored_volume_start))
                 one_step_volume_difference.append(QsIn0*dt - QsOut*dt - (self.get_stored_volume() - current_stored_volume))
                 current_stored_volume = self.get_stored_volume()
-                if abs(one_step_volume_difference[-1]) > 0.1:
-                    print(f"WARNING : HUGE SEDIMENT CREATION/DISAPPEARANCE ON THE STEP OF TIME i={i}")
                 profile_list.append(self.copy())
 
         try:       
             Q = np.interp(t, t_hydrogram, hydrogram)
-            Q_list.append(Q)
+            Q_history.append(Q)
             y_matrix.append(self.get_yc_list(Q) if critical else self.compute_depth(hydrogram[-1]))
             h_matrix.append([s.get_H(Q, y_matrix[-1][i]) for i, s in enumerate(self.get_section_list())])
         except Exception:
@@ -385,120 +340,119 @@ class Profile():
         x = self.get_x_list()
         x_max = max(x)
         x = [x_max-xi for xi in x]
-        if not(plot):
-            return None
+        if plot:
+            title = 'Sediment transport :\n' + \
+                f'Volume gone in :  {V_in}\n' + \
+                f'Volume gone out : {V_out}\n' + \
+                f'Stored volume : {stored_volume_end - stored_volume_start}\n' + \
+                f'Sum : {V_in - V_out - (stored_volume_end - stored_volume_start)}'
+            fig0, axs = plt.subplots(2)
+            fig0.suptitle(title)
+            axs[0].plot(x, z_matrix[0], color="r", label="z start")
+            axs[0].plot(x, z_matrix[-1], "orange", label="z end")
+            axs[0].plot(x, self.get_z_min_list(), "g--", marker="x", label="zmin")
+            axs[0].set(xlabel="x", ylabel="height (m)")
+            # axs[0].plot(x, [s.get_H(Q, y_matrix[-1][i]) for i, s in enumerate(self.__section_list)], label="Energy grade line")
+            axs[1].plot(x, np.array(z_matrix[-1])-np.array(z_matrix[0]), "b", label="newz-z")
+            axs[1].annotate(f"event of {time_to_string(t)}\ndt $\in$ [{min(dt_history):.3f}s, {max(dt_history):.3f}s]\nQmax = {max(hydrogram):.3f}m3/s\nQmean = {np.mean(hydrogram):.3f}m3/s\nfriction law = {'critical' if critical else friction_law}\nsediment transport law = {str(law)}\ntime of computation = {time_to_string(end_computation-start_computation)}", (self.get_x_min(), axs[1].get_ylim()[0]))
+            axs[1].set(xlabel="x", ylabel="difference of height (m)")
+            self.__plot_width_background(axs[0])
+            self.__plot_width_background(axs[1])
+            fig0.legend(loc='lower right')
+            fig0.set_size_inches(10.5, 9.5)
+            if backup:
+                print("saving result plot...")
+                fig0.savefig("./result.png", dpi=400, format="png")
+                print("plot saved.")
 
-        title = 'Sediment transport :\n' + \
-            f'Volume gone in :  {V_in}\n' + \
-            f'Volume gone out : {V_out}\n' + \
-            f'Stored volume : {stored_volume_end - stored_volume_start}\n' + \
-            f'Sum : {V_in - V_out - (stored_volume_end - stored_volume_start)}'
-        fig0, axs = plt.subplots(2)
-        fig0.suptitle(title)
-        axs[0].plot(x, z_matrix[0], color="r", label="z start")
-        axs[0].plot(x, z_matrix[-1], "orange", label="z end")
-        axs[0].plot(x, self.get_z_min_list(), "g--", marker="x", label="zmin")
-        axs[0].set(xlabel="x", ylabel="height (m)")
-        # axs[0].plot(x, [s.get_H(Q, y_matrix[-1][i]) for i, s in enumerate(self.__section_list)], label="Energy grade line")
-        axs[1].plot(x, np.array(z_matrix[-1])-np.array(z_matrix[0]), "b", label="newz-z")
-        axs[1].annotate(f"event of {time_to_string(t)}\ndt $\in$ [{min(dt_list):.3f}s, {max(dt_list):.3f}s]\nQmax = {max(hydrogram):.3f}m3/s\nQmean = {np.mean(hydrogram):.3f}m3/s\nfriction law = {'critical' if critical else friction_law}\nsediment transport law = {str(law)}\ntime of computation = {time_to_string(end_computation-start_computation)}", (self.get_x_min(), axs[1].get_ylim()[0]))
-        axs[1].set(xlabel="x", ylabel="difference of height (m)")
-        self.__plot_width_background(axs[0])
-        self.__plot_width_background(axs[1])
-        fig0.legend(loc='lower right')
-        fig0.set_size_inches(10.5, 9.5)
-        if backup:
-            print("saving result plot...")
-            fig0.savefig("./result.png", dpi=400, format="png")
-            print("plot saved.")
+            if debug:
+                plt.figure()
+                plt.plot([i*dt for i in range(len(total_volume_difference))], total_volume_difference, label="acumulated solid creation or disappearance")
+                plt.plot([i*dt for i in range(len(one_step_volume_difference))], one_step_volume_difference, label="solid creation or disappearance during this step of time")
+                plt.legend()
+                plt.title('sediment creation or diseppearance due to numerical errors')
 
-        if debug:
-            plt.figure()
-            plt.plot([i*dt for i in range(len(total_volume_difference))], total_volume_difference, label="acumulated solid creation or disappearance")
-            plt.plot([i*dt for i in range(len(one_step_volume_difference))], one_step_volume_difference, label="solid creation or disappearance during this step of time")
+        if animate:
+            fig, ax1 = plt.subplots() 
+            line, = ax1.plot(x, np.array(y_matrix[0])+np.array(z_matrix[0]), label="water line")
+            ax1.set_ylabel("height (m)")
+            annotation = ax1.annotate(f"Q={hydrogram[0]}", ((self.get_x_max()-self.get_x_min())*0.7+self.get_x_min(), min(self.get_z_min_list())))
+            ax1.plot(x, z_matrix[0], "r", label="z at the begining")
+            # ax1.vlines(200, 180, 210)
+            line2, = ax1.plot(x, z_matrix[0], "orange", label="z")
+            ax1.plot(x, self.get_z_min_list(), "g--", marker="x", label="zmin")
+            line3, = ax1.plot(x, h_matrix[0], color="pink", label="energy grade line")
+            ax1.set_ylim(min(self.get_z_min_list()), get_matrix_max(z_matrix)+get_matrix_max(y_matrix)) 
+
+            plt.xlim(self.get_x_min(), self.get_x_max())
+            plt.xlabel("x")
+            ax1.set_title("Water depth and bottom evolution")
+            fig.set_size_inches(9.5, 5.5)
+            self.__plot_width_background(ax1)
             plt.legend()
-            plt.title('sediment creation or diseppearance due to numerical errors')
-
-        fig, ax1 = plt.subplots() 
-        line, = ax1.plot(x, np.array(y_matrix[0])+np.array(z_matrix[0]), label="water line")
-        ax1.set_ylabel("height (m)")
-        annotation = ax1.annotate(f"Q={hydrogram[0]}", ((self.get_x_max()-self.get_x_min())*0.7+self.get_x_min(), min(self.get_z_min_list())))
-        ax1.plot(x, z_matrix[0], "r", label="z at the begining")
-        # ax1.vlines(200, 180, 210)
-        line2, = ax1.plot(x, z_matrix[0], "orange", label="z")
-        ax1.plot(x, self.get_z_min_list(), "g--", marker="x", label="zmin")
-        line3, = ax1.plot(x, h_matrix[0], color="pink", label="energy grade line")
-        ax1.set_ylim(min(self.get_z_min_list()), get_matrix_max(z_matrix)+get_matrix_max(y_matrix)) 
-
-        plt.xlim(self.get_x_min(), self.get_x_max())
-        plt.xlabel("x")
-        ax1.set_title("Water depth and bottom evolution")
-        fig.set_size_inches(9.5, 5.5)
-        self.__plot_width_background(ax1)
-        plt.legend()
-        def animate(i): 
-            y = y_matrix[i%(len(y_matrix))]
-            z = z_matrix[i%(len(y_matrix))] # y_matrix because in case of error, there is one more element in z_matrix and we need y and z to be synchronized
-            h = h_matrix[i%(len(y_matrix))] # len(y_matrix) = len(h_matrix) so whatever 
-            annotation.set_text(f"Q={Q_list[i%(len(y_matrix))]:.2f}\n {(i%(len(y_matrix)))*100/(len(y_matrix)):.1f}%\n t={t_list[i%len(y_matrix)]:.3f}/{t_list[-1]:.3f}\n")
-            line.set_data(x, np.array(y)+np.array(z))
-            line2.set_data(x, z)
-            line3.set_data(x, h)
-            return line, line2, line3, annotation, 
-        time_ani = 60 # seconds
-        nb_frames = 1000 
-        frames=(range(len(y_matrix)) if len(y_matrix)<nb_frames else range(0, len(y_matrix), len(y_matrix)//nb_frames))
-        ani = animation.FuncAnimation(fig, animate, frames=frames, interval=time_ani*1000/len(y_matrix), repeat=True, repeat_delay=3000)
-        if backup:
-            print("saving animation...")
-            print(f"number of frames : {len(frames)}")
-            t0 = time()
-            ani.save("./animation.mp4", fps=len(frames)/time_ani, dpi=150)
-            print(f"animation saved ({time()-t0}).")
-        if debug:
-            print("[DEBUG] STARTING DEBUG")
-            answer = str(input("[DEBUG] \t Do you want to see the animation ? [yes/no] :"))
-            while answer != "yes" and answer != "no":
-                answer = str(input("[DEBUG]\t please write 'yes' or 'no' : "))
-            if answer == "yes":
-                plt.show()
-            else:
-                plt.close()
-            while input("[DEBUG] write \"stop\" to leave the debug loop, else please press ENTER : ") != "stop":
-                index = (int(input(f"[DEBUG]\t CHOOSE THE INDEX (<{len(profile_list)}) : ")))%(len(profile_list))
-                test_profile = profile_list[index]
-                if index == len(profile_list)-1:
-                    print("[DEBUG] \t\t\t last profile chosen.")
-                    test_profile.plot()
+            def animate(i): 
+                y = y_matrix[i%(len(y_matrix))]
+                z = z_matrix[i%(len(y_matrix))] # y_matrix because in case of error, there is one more element in z_matrix and we need y and z to be synchronized
+                h = h_matrix[i%(len(y_matrix))] # len(y_matrix) = len(h_matrix) so whatever 
+                annotation.set_text(f"Q={Q_history[i%(len(y_matrix))]:.2f}\n {(i%(len(y_matrix)))*100/(len(y_matrix)):.1f}%\n t={t_history[i%len(y_matrix)]:.3f}/{t_history[-1]:.3f}\n")
+                line.set_data(x, np.array(y)+np.array(z))
+                line2.set_data(x, z)
+                line3.set_data(x, h)
+                return line, line2, line3, annotation, 
+            time_ani = 60 # seconds
+            nb_frames = 1000 
+            frames=(range(len(y_matrix)) if len(y_matrix)<nb_frames else range(0, len(y_matrix), len(y_matrix)//nb_frames))
+            ani = animation.FuncAnimation(fig, animate, frames=frames, interval=time_ani*1000/len(y_matrix), repeat=True, repeat_delay=3000)
+            if backup:
+                print("saving animation...")
+                print(f"number of frames : {len(frames)}")
+                t0 = time()
+                ani.save("./animation.mp4", fps=len(frames)/time_ani, dpi=150)
+                print(f"animation saved ({time()-t0}).")
+            if debug:
+                print("[DEBUG] STARTING DEBUG")
+                answer = str(input("[DEBUG] \t Do you want to see the animation ? [yes/no] :"))
+                while answer != "yes" and answer != "no":
+                    answer = str(input("[DEBUG]\t please write 'yes' or 'no' : "))
+                if answer == "yes":
                     plt.show()
                 else:
-                    test_Q = hydrogram[index]
-                    test_y = test_profile.compute_depth(test_Q, plot=True)
-                    plt.show()
-                    answer = str(input("[DEBUG] \t Do you want to complete the profile ? [yes/no] :"))
+                    plt.close()
+                while input("[DEBUG] write \"stop\" to leave the debug loop, else please press ENTER : ") != "stop":
+                    index = (int(input(f"[DEBUG]\t CHOOSE THE INDEX (<{len(profile_list)}) : ")))%(len(profile_list))
+                    test_profile = profile_list[index]
+                    if index == len(profile_list)-1:
+                        print("[DEBUG] \t\t\t last profile chosen.")
+                        test_profile.plot()
+                        plt.show()
+                    else:
+                        test_Q = hydrogram[index]
+                        test_y = test_profile.compute_depth(test_Q, plot=True)
+                        plt.show()
+                        answer = str(input("[DEBUG] \t Do you want to complete the profile ? [yes/no] :"))
+                        while answer != "yes" and answer != "no":
+                            answer = str(input("[DEBUG]\t please write 'yes' or 'no' : "))
+                        if answer=="yes":
+                            dx = int(input("[DEBUG] \t\t chose a dx : "))
+                            test_profile.complete(dx)
+                            test_y = test_profile.compute_depth(test_Q, plot=True)
+                            plt.show()
+                    answer = str(input("[DEBUG] \t Do you want to save this profile ? [yes/no] :"))
                     while answer != "yes" and answer != "no":
                         answer = str(input("[DEBUG]\t please write 'yes' or 'no' : "))
                     if answer=="yes":
-                        dx = int(input("[DEBUG] \t\t chose a dx : "))
-                        test_profile.complete(dx)
-                        test_y = test_profile.compute_depth(test_Q, plot=True)
-                        plt.show()
-                answer = str(input("[DEBUG] \t Do you want to save this profile ? [yes/no] :"))
-                while answer != "yes" and answer != "no":
-                    answer = str(input("[DEBUG]\t please write 'yes' or 'no' : "))
-                if answer=="yes":
-                    filename = str(input("[DEBUG]\t please chose a filename : "))
-                    test_profile.export(filename)
-                    print("[DEBUG] profile saved.")
+                        filename = str(input("[DEBUG]\t please chose a filename : "))
+                        test_profile.export(filename)
+                        print("[DEBUG] profile saved.")
 
         result = dict()
         result["abscissa"] = x
-        result["animation"] = ani
+        result["animation"] = ani if animate else None
         result["water_depth"] = y_matrix
         result["bottom_height"] = z_matrix
-        result["time"] = t_list
+        result["time"] = t_history
         result["energy"] = h_matrix
-
+        
         return result
 
     # getters and setters
@@ -527,11 +481,11 @@ class Profile():
         """
         return [section.get_z() for section in self.__section_list]
 
-    def get_yc_list(self, Q):
-        return [section.get_yc(Q) for section in self.__section_list]        
+    def get_yc_list(self, Q_list):
+        return [section.get_yc(Q_list[i]) for i, section in enumerate(self.__section_list)]        
 
-    def get_yn_list(self, Q, friction_law="Ferguson"):
-        return [section.get_yn(Q, friction_law=friction_law) for section in self.get_section_list()]
+    def get_yn_list(self, Q_list, friction_law="Ferguson"):
+        return [section.get_yn(Q_list[i], friction_law=friction_law) for i, section in enumerate(self.get_section_list())]
 
     def get_z_min_list(self):
         """
@@ -564,6 +518,16 @@ class Profile():
     def get_downstream_section(self):
         return self.__downstream
 
+    def get_exit_loss_coef(self, index):
+        try:
+            return self.__exit_loss_coef_list[index]
+        except IndexError:
+            print(f"ERROR : index of exit loss coef must be >= 0 and < number of section - 1 ({index} > {len(self.__exit_loss_coef_list)-2})")
+            return 0
+    
+    def get_exit_loss_coef_list(self):
+        return self.__exit_loss_coef_list[:]
+
     def get_stored_volume(self):
         """
         Compute the potential amount of solid stored in the profile.
@@ -576,6 +540,8 @@ class Profile():
 
     def get_upstream_boundary_condition(self, Q, friction_law="Ferguson", upstream_condition="normal_depth"):
         s = self.get_upstream_section()
+        if type(upstream_condition) == int or type(upstream_condition)==float:
+            return min(upstream_condition, s.get_y_max())
         s0 = s.get_S0(up_direction=False)
         yc = s.get_yc(Q)
         if s0 <= 0 or upstream_condition=="critical_depth":
@@ -586,6 +552,8 @@ class Profile():
 
     def get_downstream_boundary_condition(self, Q, friction_law="Ferguson", downstream_condition="normal_depth"):
         s = self.get_downstream_section()
+        if type(downstream_condition) == int or type(downstream_condition)==float:
+            return min(downstream_condition, s.get_y_max())
         s0 = s.get_S0(up_direction=True)
         yc = s.get_yc(Q)
         if s0 <= 0 or downstream_condition=="critical_depth":
@@ -603,7 +571,7 @@ class Profile():
     # computational stuff
 
     @Performance.measure_perf
-    def __compute_next_y(self, Q, current_section, next_section, current_y, current_hs, next_yc, supercritical, method="ImprovedEuler", friction_law="Ferguson"):
+    def __compute_next_y(self, current_Q, next_Q, current_section, next_section, current_y, current_hs, next_yc, supercritical, exit_loss_coef=0, method="ImprovedEuler", friction_law="Ferguson"):
         """
         private methods only used in compute_depth for computing at each step the new specific head thanks to Euler methods.
         method can be "Euler", "ImprovedEuler" or "RungeKutta". 
@@ -612,68 +580,84 @@ class Profile():
         if method=="RungeKutta":
             up_direction = next_section.get_x() - current_section.get_x() < 0
             inter_section = next_section.interp_as_up_section(current_section) if up_direction else next_section.interp_as_down_section(current_section)
-            inter_yc = inter_section.get_yc(Q)
-            s1 = current_section.get_S0(up_direction=up_direction) - current_section.get_Sf(Q, current_y, friction_law=friction_law)
+            inter_yc = inter_section.get_yc(current_Q)
+            s1 = current_section.get_S0(up_direction=up_direction) - current_section.get_Sf(current_Q, current_y, friction_law=friction_law)
             dx = inter_section.get_x() - current_section.get_x()
             hs_next = current_hs + dx*s1
             if (hs_next + inter_section.get_z() - (current_hs + current_section.get_z()))*dx > 0:
                 hs_next = current_hs + current_section.get_z() - inter_section.get_z()
-            if hs_next < inter_section.get_Hs(Q, inter_yc):
-                hs_next = inter_section.get_Hs(Q, inter_yc)
-            y_inter = inter_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=inter_yc)
-            s2 = inter_section.get_S0() - inter_section.get_Sf(Q, y_inter, friction_law=friction_law)
+            if hs_next < inter_section.get_Hs(current_Q, inter_yc):
+                hs_next = inter_section.get_Hs(current_Q, inter_yc)
+            y_inter = inter_section.get_y_from_Hs(current_Q, hs_next, supercritical=supercritical, yc=inter_yc)
+            s2 = inter_section.get_S0() - inter_section.get_Sf(current_Q, y_inter, friction_law=friction_law)
             hs_next = current_hs + dx*s2
             if (hs_next + inter_section.get_z() - (current_hs + current_section.get_z()))*dx > 0:
                 hs_next = current_hs + current_section.get_z() - inter_section.get_z()
-            if hs_next < inter_section.get_Hs(Q, inter_yc):
-                hs_next = inter_section.get_Hs(Q, inter_yc)
-            y_inter = inter_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=inter_yc)
-            s3 = inter_section.get_S0() - inter_section.get_Sf(Q, y_inter, friction_law=friction_law)
+            if hs_next < inter_section.get_Hs(current_Q, inter_yc):
+                hs_next = inter_section.get_Hs(current_Q, inter_yc)
+            y_inter = inter_section.get_y_from_Hs(current_Q, hs_next, supercritical=supercritical, yc=inter_yc)
+            s3 = inter_section.get_S0() - inter_section.get_Sf(current_Q, y_inter, friction_law=friction_law)
             hs_next = current_hs + 2*dx*s3
             if (hs_next + next_section.get_z() - (current_hs + current_section.get_z()))*dx > 0:
                 hs_next = current_hs + current_section.get_z() - next_section.get_z()
-            if hs_next < next_section.get_Hs(Q, next_yc):
-                hs_next = next_section.get_Hs(Q, next_yc)
-            y_inter = next_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=inter_yc)
-            s4 = next_section.get_S0(up_direction=not(up_direction)) - next_section.get_Sf(Q, y_inter, friction_law=friction_law)
+            if hs_next < next_section.get_Hs(next_Q, next_yc):
+                hs_next = next_section.get_Hs(next_Q, next_yc)
+            y_inter = next_section.get_y_from_Hs(next_Q, hs_next, supercritical=supercritical, yc=inter_yc)
+            s4 = next_section.get_S0(up_direction=not(up_direction)) - next_section.get_Sf(next_Q, y_inter, friction_law=friction_law)
             hs_next = current_hs + (s1+2*s2+2*s3+s4)*dx*(2/6)
             if (hs_next + next_section.get_z() - (current_hs + current_section.get_z()))*dx > 0:
                 hs_next = current_hs + current_section.get_z() - next_section.get_z()
-            if hs_next < next_section.get_Hs(Q, next_yc):
-                hs_next = next_section.get_Hs(Q, next_yc)
-            return next_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=next_yc)
+            if hs_next < next_section.get_Hs(next_Q, next_yc):
+                hs_next = next_section.get_Hs(next_Q, next_yc)
+            return next_section.get_y_from_Hs(next_Q, hs_next, supercritical=supercritical, yc=next_yc)
         else:
             x_next = next_section.get_x()
             x_current = current_section.get_x()
             dx = x_next - x_current
-            hsc_next = next_section.get_Hs(Q, next_yc)
+            hsc_next = next_section.get_Hs(next_Q, next_yc)
             z_next = next_section.get_z()
             z_current = current_section.get_z()
 
             up_direction = dx < 0
-            s1 = current_section.get_S0(up_direction=up_direction) - current_section.get_Sf(Q, current_y, friction_law=friction_law)
+            s1 = current_section.get_S0(up_direction=up_direction) - current_section.get_Sf(current_Q, current_y, friction_law=friction_law)
             hs_next = current_hs + dx*s1
+            
             if (hs_next + z_next - (current_hs + z_current))*dx > 0:
                 hs_next = current_hs + z_current - z_next
             if hs_next < hsc_next:
                 hs_next = hsc_next
                 next_y = next_yc
             else:
-                next_y = next_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=next_yc)
-            if method=="Euler":
-                return next_y
-            s2 = next_section.get_S0(up_direction=not(up_direction)) - next_section.get_Sf(Q, next_y, friction_law=friction_law)
-            hs_next = current_hs+ 0.5*(s1+s2)*dx
+                next_y = next_section.get_y_from_Hs(next_Q, hs_next, supercritical=supercritical, yc=next_yc)
+            if method!="Euler":
+                s2 = next_section.get_S0(up_direction=not(up_direction)) - next_section.get_Sf(next_Q, next_y, friction_law=friction_law)
+                hs_next = current_hs+ 0.5*(s1+s2)*dx
+                if (hs_next + z_next - (current_hs + z_current))*dx > 0:
+                    hs_next = current_hs + z_current - z_next
+                if hs_next < hsc_next:
+                    next_y = next_yc
+                else:
+                    next_y = next_section.get_y_from_Hs(next_Q, hs_next, supercritical=supercritical, yc=next_yc)
+            
+            # before_exit_loss = next_y
+            current_v = current_section.get_V(current_Q, current_y)
+            next_v = next_section.get_V(next_Q, next_y)
+            hs_next = hs_next + (1 if up_direction else -1)*exit_loss_coef*abs(current_v**2-next_v**2)/(2*G)
             if (hs_next + z_next - (current_hs + z_current))*dx > 0:
                 hs_next = current_hs + z_current - z_next
             if hs_next < hsc_next:
-                return next_yc
-            return next_section.get_y_from_Hs(Q, hs_next, supercritical=supercritical, yc=next_yc)
+                next_y = next_yc
+            else:
+                next_y = next_section.get_y_from_Hs(next_Q, hs_next, supercritical=supercritical, yc=next_yc)
+            # after_exit_loss = next_y
+            # if after_exit_loss != before_exit_loss:
+            #     print(f"variation : {(after_exit_loss-before_exit_loss)/before_exit_loss*100:.4f}%")
+            return next_y
 
 
     # plot methods
 
-    def plot(self, y=None, Q=None, title=None, compare=None, friction_law="Ferguson", background=False):
+    def plot(self, y=None, Q_list=None, title=None, compare=None, friction_law="Ferguson", background=False):
         fig, ax1 = plt.subplots()
         x = self.get_x_list()
         x_maxi = max(x)
@@ -687,13 +671,13 @@ class Profile():
         if y != None:
             ax1.plot(x, np.array(z)+np.array(y), "b-", label="water depth")
             ax1.fill_between(x, np.array(z), np.array(z)+np.array(y), color="cyan")
-        if Q != None:
-            yn_list = self.get_yn_list(Q, friction_law=friction_law)
-            yc_list = self.get_yc_list(Q)
+        if Q_list != None:
+            yn_list = self.get_yn_list(Q_list, friction_law=friction_law)
+            yc_list = self.get_yc_list(Q_list)
             ax1.plot(x, np.array(z)+np.array(yn_list), color="violet" , linestyle="dashed", label="normal depth")
             ax1.plot(x, np.array(z)+np.array(yc_list), color="yellowgreen", linestyle="dashdot", label="critical depth")
-        if y!=None and Q!=None:
-            ax1.plot(x, [self.__section_list[i].get_H(Q, y[i]) for i in range(len(self.__section_list))], linestyle=(0, (5, 1)), color="orange", label="energy grade line")
+        if y!=None and Q_list!=None:
+            ax1.plot(x, [self.__section_list[i].get_H(Q_list[i], y[i]) for i in range(len(self.__section_list))], linestyle=(0, (5, 1)), color="orange", label="energy grade line")
             #ax1.plot(x, [self.__section_list[i].get_H(Q, yc_list[i]) for i in range(len(self.__section_list))], linestyle=(0, (5, 1)), color="purple", label="critic energy grade line")
         if y != None and compare != None:
             x_compare, y_compare = compare
@@ -771,21 +755,22 @@ class Profile():
         alternate = -1
         for i, section in enumerate(self.__section_list):
             points = section.get_points()
+            shift = points[-1][0]/2
             xi = section.get_x()
             zi = section.get_z()
             if y != None:
                 wet_points = section.get_wet_section(y[i])
                 data2[0].append(xi)
                 data2[0].append(xi)
-                data2[1].append(wet_points[0][0])
-                data2[1].append(wet_points[-1][0])
+                data2[1].append(wet_points[0][0]-shift)
+                data2[1].append(wet_points[-1][0] - shift)
                 data2[2].append(zi + wet_points[0][1])
                 data2[2].append(zi + wet_points[-1][1])
             if alternate==1: # trick for make a beautiful plot :)
                 points = points[-1::-1]
             for point_x, point_y in points:
                 data1[0].append(xi)
-                data1[1].append(point_x)
+                data1[1].append(point_x - shift)
                 data1[2].append(zi+point_y)    
             alternate = - alternate
         ax.plot(data1[0], data1[1], data1[2], color="brown", label="profile", alpha=0.5)
@@ -801,3 +786,7 @@ class Profile():
 
     def import_profile(filename):
         return pkl.load(open(filename, "rb"))
+
+    #### EXPERIENCES
+
+    

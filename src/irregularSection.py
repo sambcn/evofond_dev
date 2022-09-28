@@ -250,6 +250,7 @@ class IrregularSection:
         area = self.get_S(y, wet_points=wet_points)
         return centroid_depth*area + Q**2 / (area*G)
 
+    @Performance.measure_perf
     def get_yc(self, Q):
         """critical water depth"""
         def equation_function(y): # Froude number is one for critical depth
@@ -268,6 +269,7 @@ class IrregularSection:
         yc = max(yc, 0)
         return yc
 
+    @Performance.measure_perf
     def get_yn(self, Q, friction_law="Ferguson"):
         """normal water depth"""
         b = self.is_downstream()
@@ -309,8 +311,8 @@ class IrregularSection:
             else:
                 return brentq(objective_function, yc, 0.999*self.get_y_max())
         except ValueError as e:
-            y_solution = "Y_MIN" if supercritical else "Y_MAX"
-            print(f"BIG WARNING : in computing y from Hs, could not find a fine solution, returned {y_solution} (x={self.get_x()})")
+            # y_solution = "Y_MIN" if supercritical else "Y_MAX"
+            # print(f"BIG WARNING : in computing y from Hs, could not find a fine solution, returned {y_solution} (x={self.get_x()})")
             return Y_MIN if supercritical else 0.999*self.get_y_max()
 
     # getters and setters that will not change for children classes
@@ -424,13 +426,14 @@ class IrregularSection:
 
     def plot(self, y=None):
         fig, ax = plt.subplots()
-        ax.plot(self.__x_list, np.array(self.__y_list) + self.__z)
+        points = self.get_points()
+        ax.plot([p[0] for p in points], np.array([p[1] for p in points]) + self.get_z())
         if y != None:
             wet_points = self.get_wet_section(y)
             wpx = [p[0] for p in wet_points]
             wpy = [p[1] for p in wet_points]
             ax.plot(wpx, np.array([y for _ in range(len(wpx))]) + self.__z, "b--", label="water depth")
-            ax.fill_between(wpx, np.array(wpy) + self.__z, np.array(wpy)+y+self.__z, color="cyan")
+            ax.fill_between(wpx, np.array(wpy) + self.__z, y+self.__z, color="cyan")
         plt.title(f"irregular section at x = {self.__x}")
         return fig
 

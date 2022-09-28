@@ -1,11 +1,11 @@
 from src.perf import Performance
-from src.utils import G, real_roots_cubic_function
+from src.utils import G
 from src.irregularSection import IrregularSection
 import numpy as np
 
 class RectangularSection(IrregularSection):
 
-    def __init__(self, x, z, b, z_min=None, y_max=None , up_section=None, down_section=None, granulometry=None, manning=0.013, K_over_tauc=None, tauc_over_rho=None):
+    def __init__(self, x, z, b, z_min=None, y_max=None , up_section=None, down_section=None, granulometry=None, manning=None, K_over_tauc=None, tauc_over_rho=None):
         self.__b = b
         self.__y_max = 1000 if y_max==None or y_max <= 0 else y_max # MAX_INT
         points = [(0, self.__y_max), (0,0), (b, 0), (b, self.__y_max)]
@@ -47,14 +47,15 @@ class RectangularSection(IrregularSection):
             dx_down = dx_up
         ######
         S =0.5*((0.75*b+0.25*b_up)*dx_up+(0.75*b+0.25*b_down)*dx_down)
-        Qs_out_max = (S * (self.get_z()-self.get_z_min()) /dt) #*0.3 # z can not be less than zmin
+        Qs_out_max = 0.999*(S * (self.get_z()-self.get_z_min()) /dt) #*0.3 # z can not be less than zmin
         Qs_out = min(Qs_out, Qs_out_max)
         
         if self.is_downstream():
             Qs_out = Qs_in # max(Qs_in, Qs_out) # Sediments can not stay on the last section. 
         
+        # print(f"Qs = {Qs_out}")
         z_new = (self.get_z() + (Qs_in-Qs_out)*dt/S)
-
+    
         # # check CFL
         # if not(self.is_downstream()):
         #     delta_z = abs(z_new-self.get_z())
@@ -64,7 +65,14 @@ class RectangularSection(IrregularSection):
         #         pass # LOG
         #         # print(f"WARNING : CFL CHECK FAILED IN SEDIMENT TRANSPORT (x={self.get_x()}, dt={dt}>{dx_down/v:.3f})")
 
+        # if self.is_downstream():
+        #     print("last")
+        # if self.get_down_section().is_downstream():
+        #     print("stop")
+        #     Qs_out = law.compute_Qs(self, Q, y, y_down)
+
         self.set_z(z_new)
+       
         return Qs_out
 
     def get_stored_volume(self):
